@@ -639,6 +639,54 @@ TEST_F(GraphTransformationTests, DropoutElimination) {
   ASSERT_TRUE(op_to_count["Dropout"] == 2);
 }
 
+
+TEST_F(GraphTransformationTests, DropoutEliminationTrainingMode) {
+  auto run_test = [&](bool include_training_mode, bool training_mode_is_initializer, bool training_mode_value,
+                      int expected_dropout_count) {
+    auto build_test_case = [&](ModelTestBuilder& builder) {
+      auto* input = builder.MakeInput<float>({1, 4});
+      auto* ratio = builder.MakeScalarInitializer<float>(0.8f);
+      auto* dropout_output = builder.MakeIntermediate();
+      auto* output = builder.MakeOutput();
+
+      std::vector<NodeArg*> inputs{input, ratio};
+      if (include_training_mode) {
+        if (training_mode_is_initializer) {
+          inputs.push_back(builder.MakeInitializerBool({}, {training_mode_value}));
+        } else {
+          inputs.push_back(builder.MakeInput<bool>({}, {training_mode_value}));
+        }
+      }
+
+      builder.AddNode("Dropout", inputs, {dropout_output});
+      builder.AddNode("Identity", {dropout_output}, {output});
+    };
+
+    auto pre_graph_checker = [](Graph& graph) {
+      EXPECT_EQ(CountOpsInGraph(graph)["Dropout"], 1);
+      return Status::OK();
+    };
+    auto post_graph_checker = [expected_dropout_count](Graph& graph) {
+      EXPECT_EQ(CountOpsInGraph(graph)["Dropout"], expected_dropout_count);
+      return Status::OK();
+    };
+
+    auto rule_transformer = std::make_unique<RuleBasedGraphTransformer>("RuleTransformer1");
+    ASSERT_STATUS_OK(rule_transformer->Register(std::make_unique<EliminateDropout>()));
+    ASSERT_STATUS_OK(TestGraphTransformer(build_test_case, 13, *logger_, std::move(rule_transformer),
+                                          TransformerLevel::Level1, 1, pre_graph_checker, post_graph_checker));
+  };
+
+  // Active Dropout must be preserved, even when its mask output is unused.
+  run_test(true, true, true, 1);
+  // Inference-mode Dropout remains eligible for elimination.
+  run_test(true, true, false, 0);
+  // A runtime-provided mode cannot be proven to be false.
+  run_test(true, false, false, 1);
+  // Omitting the optional input defaults to inference mode.
+  run_test(false, false, false, 0);
+}
+
 TEST_F(GraphTransformationTests, SliceElimination) {
   std::vector<std::basic_string<ORTCHAR_T>> model_names = {ORT_TSTR("slice-v1-elim.onnx"), ORT_TSTR("slice-v11-elim.onnx")};
   for (const auto& model_name : model_names) {
