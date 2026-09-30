@@ -26,6 +26,26 @@ bool EliminateDropout::SatisfyCondition(const Graph& graph, const Node& node, co
     return false;
   }
 
+
+  // Dropout opset 12 and later accept an optional training_mode input. It is only
+  // an identity operation when training_mode is absent or known to be false.
+  if (graph_utils::MatchesOpSinceVersion(node, {12, 13, 22}) && node.InputDefs().size() > 2) {
+    const NodeArg* training_mode = node.InputDefs()[2];
+    if (!training_mode || graph_utils::IsGraphInput(graph, training_mode)) {
+      return false;
+    }
+
+    const ONNX_NAMESPACE::TensorProto* initializer = graph.GetConstantInitializer(training_mode->Name(), true);
+    if (!initializer || initializer->data_type() != ONNX_NAMESPACE::TensorProto_DataType_BOOL) {
+      return false;
+    }
+
+    Initializer training_mode_value(graph, *initializer, graph.ModelPath());
+    if (training_mode_value.size() != 1 || *training_mode_value.data<bool>()) {
+      return false;
+    }
+  }
+
 #ifdef ENABLE_TRAINING_CORE
   // allow Dropout elimination when:
   //    1. ratio input is an initializer of 0
